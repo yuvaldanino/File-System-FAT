@@ -4,7 +4,7 @@ targets := disk fs
 objs    := disk.o fs.o
 CC    	:= gcc
 
-CFLAGS    := -Wall -Wextra -g
+CFLAGS    := -g #-Wall -Wextra -Werror
 
 ifneq ($(V),1)
 Q = @
