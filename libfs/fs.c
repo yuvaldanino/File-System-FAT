@@ -52,7 +52,7 @@ typedef struct __attribute__((packed)) {
 static  SuperBlock *super_block;
 static  FAT *fat_entries;
 static  RootEntry *RootEntryArray;
-static struct FileDescriptor *fd_table[FS_OPEN_MAX_COUNT];
+static  FileDescriptor *fd_table[FS_OPEN_MAX_COUNT];
 
 
 // make fs on disk accessible on diskname (OS)
@@ -347,21 +347,123 @@ int fs_ls(void)
 int fs_open(const char *filename)
 {
 	/* TODO: Phase 3 */
+    int fd;
+    // Check if the filesystem is mounted
+    if (!super_block || !fat_entries || !RootEntryArray) {
+        return -1;  // Filesystem not mounted
+    }
+
+    if (!filename || strlen(filename) == 0 || strlen(filename) >= MAX_FILENAME) {
+        fprintf(stderr, "Error: Invalid filename.\n");
+        return -1;
+    }
+    // Check if file exists
+    int fileIndex = -1;
+    for (int i = 0; i < MAX_ROOT_ENTRIES; i++) {
+        if (strcmp((char *)RootEntryArray[i].file_name, filename) == 0) {
+            fileIndex = i;
+            break;
+        }
+    }
+    // if file not found 
+    if (fileIndex == -1) {
+        fprintf(stderr, "Error: File not found.\n");
+        return -1;
+    }
+
+    //look for spot in fd table 
+    // avilable spot = NULL in mount we initialize all the fd to NULL so we have empty table 
+    for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+        if (fd_table[i] == NULL) {  // Found an available spot
+            fd_table[i] = malloc(sizeof(FileDescriptor));
+            if (fd_table[i] == NULL) {
+                return -1;  // Failed to allocate memory for FD
+            }
+            fd_table[i]->offset = 0;  // Initialize file offset to 0
+            fd_table[i]->index = fileIndex;  // Store the index of the file in the root directory
+            fd_table[i]->in_use = 1;  // Mark FD as in use
+            fd = i;  // FD is the index in the fd_table
+            break;
+        }
+    }
+
+    if (fd == -1) {
+        return -1;  // No available file descriptor spot
+    }
+
+    return fd;  // Return the file descriptor
+
+
 }
 
 int fs_close(int fd)
 {
 	/* TODO: Phase 3 */
+    // Check if the file descriptor is within the valid range
+    if (fd < 0 || fd >= FS_OPEN_MAX_COUNT) {
+        return -1; // Invalid file descriptor
+    }
+
+    // Check if the file descriptor is actually in use
+    if (fd_table[fd] == NULL || fd_table[fd]->in_use == 0) {
+        return -1; // File descriptor not in use or invalid
+    }
+
+    // Free the allocated memory for the file descriptor
+    free(fd_table[fd]);
+    // Mark the slot as available again
+    fd_table[fd] = NULL;
+
+    return 0; // Successful closure
 }
 
 int fs_stat(int fd)
 {
 	/* TODO: Phase 3 */
+    // Check if the filesystem is mounted
+    if (!super_block || !fat_entries || !RootEntryArray) {
+        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
+        return -1;
+    }
+
+    // Validate the file descriptor
+    if (fd < 0 || fd >= FS_OPEN_MAX_COUNT || fd_table[fd] == NULL || fd_table[fd]->in_use == 0) {
+        fprintf(stderr, "Error: Invalid file descriptor.\n");
+        return -1;
+    }
+
+    // Retrieve and return the size of the file associated with the file descriptor
+    return RootEntryArray[fd_table[fd]->index].file_size;
 }
 
 int fs_lseek(int fd, size_t offset)
 {
 	/* TODO: Phase 3 */
+    // Check if the filesystem is mounted
+    if (!super_block || !fat_entries || !RootEntryArray) {
+        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
+        return -1;
+    }
+
+    // Validate the file descriptor
+    if (fd < 0 || fd >= FS_OPEN_MAX_COUNT || fd_table[fd] == NULL || fd_table[fd]->in_use == 0) {
+        fprintf(stderr, "Error: Invalid file descriptor.\n");
+        return -1;
+    }
+
+    // Get the size of the file associated with the file descriptor
+    size_t fileSize = RootEntryArray[fd_table[fd]->index].file_size;
+
+    // Validate the offset
+    if (offset > fileSize) {
+        fprintf(stderr, "Error: Offset is larger than the file size.\n");
+        return -1;
+    }
+
+    // Set the file offset
+    fd_table[fd]->offset = offset;
+
+    return 0; // Success
 }
 
 int fs_write(int fd, void *buf, size_t count)

@@ -215,7 +215,81 @@ create_simple() {
     log "Score: ${score}"
 }
 
-#
+# create, delete, and ls
+create_delete_ls() {
+    log "\n--- Running ${FUNCNAME} ---"
+
+    # Create a filesystem
+    run_tool ./fs_make.x test.fs 10
+
+    # Test create
+    run_test ./test_fs.x create test.fs test-file-1
+    # Check if file was created
+    run_test ./test_fs.x ls test.fs
+    local line_array=()
+    line_array+=("$(select_line "${STDOUT}" "2")") # Assuming "file: test-file-1" is in the second line
+    local corr_array=()
+    corr_array+=("file: test-file-1, size: 0, data_blk: 65535")
+    local score
+    compare_lines line_array[@] corr_array[@] score
+    log "Create Score: ${score}"
+
+    # Test delete
+    run_test ./test_fs.x delete test.fs test-file-1
+    # Check if file was deleted
+    run_test ./test_fs.x ls test.fs
+    line_array=()
+    line_array+=("$(select_line "${STDOUT}" "2")") # Assuming the second line contains the next file after deletion
+    corr_array=()
+    corr_array+=("file: <next-file>, size: <size>, data_blk: <data-block>") # Update placeholders with the actual next file info
+    compare_lines line_array[@] corr_array[@] score
+    log "Delete Score: ${score}"
+
+    # Clean up
+    rm -f test.fs
+
+    log "Create, Delete, and LS tests completed."
+}
+
+# create, delete, and ls
+create_delete_ls() {
+    log "\n--- Running ${FUNCNAME} ---"
+
+    # Create a filesystem
+    run_tool ./fs_make.x test.fs 10
+
+    # Test create
+    run_test ./test_fs.x add test.fs simple_reader.c
+    # Check if file was created
+    run_test ./test_fs.x ls test.fs
+    local line_array=()
+    line_array+=("$(select_line "${STDOUT}" "2")") # Assuming "file: test-file-1" is in the second line
+    local corr_array=()
+    corr_array+=("file: simple_reader.c, size: 0, data_blk: 65535")
+    local create_score
+    compare_lines line_array[@] corr_array[@] create_score
+    log "Create Score: ${create_score}"
+
+    # Test delete
+    run_test ./test_fs.x rm test.fs simple_reader.c
+    # Check if file was deleted
+    run_test ./test_fs.x ls test.fs
+    local delete_score
+    if [[ "${STDOUT}" == "FS Ls:" ]]; then
+        delete_score=1
+    else
+        delete_score=0
+    fi
+    log "Delete Score: ${delete_score}"
+
+    # Clean up
+    rm -f test.fs
+
+    log "Create, Delete, and LS tests completed."
+}
+
+
+
 # Phase 3 + 4
 #
 
@@ -296,6 +370,7 @@ run_tests() {
     info_full
     # Phase 2
     create_simple
+    create_delete_ls
     # Phase 3+4
     read_block
     overwrite_block
