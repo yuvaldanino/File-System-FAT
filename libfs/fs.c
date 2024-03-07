@@ -85,8 +85,6 @@ int fs_mount(const char *diskname)
     	block_disk_close();
 		return -1;
 	}
-	//printf("made it past initial checks");
-
 
 	// Read blocks into a FAT array
 	fat_entries = malloc(sizeof(FAT) * super_block->fat_block_amount);
@@ -133,9 +131,13 @@ int fs_mount(const char *diskname)
 	return 0;
 }
 
+int is_mounted(void) {
+    return (super_block != NULL && fat_entries != NULL && RootEntryArray != NULL);
+}
+
 int fs_umount(void)
 {
-	if (!super_block || !fat_entries || !RootEntryArray) {
+	if (!is_mounted()) {
         fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;
     }
@@ -164,17 +166,12 @@ int fs_umount(void)
 
 
 	//reset fd table?
-
-	// memset(&super_block, 0, sizeof(SuperBlock));
-	// memset(&root_directory, 0, sizeof(RootEntry));
-	// free(fat_entries);
-
 	return 0;
 }
 
 int fs_info(void)
 {
-	if (!super_block || !fat_entries || !RootEntryArray) {
+	if (!is_mounted()) {
         fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;
     }
@@ -211,15 +208,18 @@ int fs_info(void)
 	return 0;
 }
 
+int is_valid_filename(const char* filename) {
+    return (filename && strlen(filename) > 0 && strlen(filename) < MAX_FILENAME);
+}
+
 int fs_create(const char *filename)
 {
-	/* TODO: Phase 2 */
-	if (!super_block || !fat_entries || !RootEntryArray) {
+	if (!is_mounted()) {
         fprintf(stderr, "Error: No filesystem is currently mounted.\n");
         return -1;
     }
 
-	if (!filename || strlen(filename) >= MAX_FILENAME) {
+	if (!is_valid_filename(filename)) {
         fprintf(stderr, "Error: Filename is invalid or too long.\n");
         return -1;
     }
@@ -264,13 +264,12 @@ int fs_create(const char *filename)
 
 int fs_delete(const char *filename)
 {
-	/* TODO: Phase 2 */
-    if (!super_block || !fat_entries || !RootEntryArray) {
+    if (!is_mounted) {
         fprintf(stderr, "Error: No filesystem is currently mounted.\n");
         return -1;
     }
 
-    if (!filename || strlen(filename) == 0 || strlen(filename) >= MAX_FILENAME) {
+    if (!is_valid_filename(filename)) {
         fprintf(stderr, "Error: Invalid filename.\n");
         return -1;
     }
@@ -320,11 +319,10 @@ int fs_delete(const char *filename)
 
 int fs_ls(void)
 {
-	/* TODO: Phase 2 */
-    if (!super_block || !fat_entries || !RootEntryArray) {
+    if (!is_mounted()) {
         fprintf(stderr, "Error: No filesystem is currently mounted.\n");
         return -1;
-    }
+    } 
 
     printf("FS Ls:\n");
 
@@ -346,14 +344,13 @@ int fs_ls(void)
 
 int fs_open(const char *filename)
 {
-	/* TODO: Phase 3 */
     int fd;
     // Check if the filesystem is mounted
-    if (!super_block || !fat_entries || !RootEntryArray) {
+    if (!is_mounted()) {
         return -1;  // Filesystem not mounted
     }
 
-    if (!filename || strlen(filename) == 0 || strlen(filename) >= MAX_FILENAME) {
+    if (!is_valid_filename(filename)) {
         fprintf(stderr, "Error: Invalid filename.\n");
         return -1;
     }
@@ -392,13 +389,10 @@ int fs_open(const char *filename)
     }
 
     return fd;  // Return the file descriptor
-
-
 }
 
 int fs_close(int fd)
 {
-	/* TODO: Phase 3 */
     // Check if the file descriptor is within the valid range
     if (fd < 0 || fd >= FS_OPEN_MAX_COUNT) {
         return -1; // Invalid file descriptor
@@ -417,17 +411,21 @@ int fs_close(int fd)
     return 0; // Successful closure
 }
 
+int is_valid_fd(int fd) {
+    return (fd >= 0 && fd < FS_OPEN_MAX_COUNT && fd_table[fd] != NULL && fd_table[fd]->in_use != 0);
+
+}
+
 int fs_stat(int fd)
 {
-	/* TODO: Phase 3 */
     // Check if the filesystem is mounted
-    if (!super_block || !fat_entries || !RootEntryArray) {
+    if (!is_mounted()) {
         fprintf(stderr, "Error: No filesystem is currently mounted.\n");
         return -1;
     }
 
     // Validate the file descriptor
-    if (fd < 0 || fd >= FS_OPEN_MAX_COUNT || fd_table[fd] == NULL || fd_table[fd]->in_use == 0) {
+    if (!is_valid_fd(fd)) {
         fprintf(stderr, "Error: Invalid file descriptor.\n");
         return -1;
     }
@@ -438,15 +436,14 @@ int fs_stat(int fd)
 
 int fs_lseek(int fd, size_t offset)
 {
-	/* TODO: Phase 3 */
     // Check if the filesystem is mounted
-    if (!super_block || !fat_entries || !RootEntryArray) {
+    if (!is_mounted()) {
         fprintf(stderr, "Error: No filesystem is currently mounted.\n");
         return -1;
     }
 
     // Validate the file descriptor
-    if (fd < 0 || fd >= FS_OPEN_MAX_COUNT || fd_table[fd] == NULL || fd_table[fd]->in_use == 0) {
+    if (!is_valid_fd(fd)) {
         fprintf(stderr, "Error: Invalid file descriptor.\n");
         return -1;
     }
@@ -473,6 +470,73 @@ int fs_write(int fd, void *buf, size_t count)
 
 int fs_read(int fd, void *buf, size_t count)
 {
-	/* TODO: Phase 4 */
+    if (!is_mounted()) {
+        return -1;
+    }
+    if (!is_valid_fd(fd)) {
+        return -1;
+    }
+    int bytes_read = 0;
+    int remaining_bytes = count;
+    char *buffer = (char *)buf;
+
+    // Calculate file's current offset and size
+    int file_offset = fd_table[fd]->offset;
+    int file_size = RootEntryArray[fd_table[fd]->index].file_size;
+
+    // Calculate index of data block at the file offset
+    int data_block_index = file_offset / BLOCK_SIZE;
+    int block_offset = file_offset % BLOCK_SIZE;
+
+    // Read data blocks until we've reached the appropriate count or reach the end of the file
+    while (bytes_read < count && file_offset < file_size) {
+        char data_block[BLOCK_SIZE];
+        int fat_index = fd_table[fd]->index;
+        int fat_block_index = fat_index / (BLOCK_SIZE / sizeof(uint16_t));
+        int fat_block_offset = fat_index % (BLOCK_SIZE / sizeof(uint16_t));
+
+        if (fat_block_index >= super_block->fat_block_amount) {
+            return -1;
+        }
+
+        // Read data block from disk
+        printf("Made it to block_read. fat_block_index: %d, fat_block_offset: %d, data_block: %s\n", fat_block_index, fat_block_offset, data_block);
+        if (block_read(fat_entries[fat_block_index].entries[fat_block_offset], data_block) == -1) {
+            return -1;
+        }
+
+        // Calculate how many bytes to read from the block
+        int bytes_to_copy = remaining_bytes;
+        if (bytes_to_copy > BLOCK_SIZE - block_offset) {
+            bytes_to_copy = BLOCK_SIZE - block_offset;
+        }
+        
+        // Copy data from block to buffer
+        memcpy(buffer + bytes_read, data_block + block_offset, bytes_to_copy);
+
+        // Update counters
+        bytes_read += bytes_to_copy;
+        remaining_bytes += bytes_to_copy;
+        file_offset += bytes_to_copy;
+        buffer += bytes_to_copy;
+
+        // Move to next data block if we still have bytes to read
+        if (remaining_bytes > 0) {
+            int next_data_block_index = fat_entries[fat_block_index].entries[fat_block_offset];
+            if (next_data_block_index == FAT_EOC) {
+                break;
+            }
+            fat_index = next_data_block_index;
+            fat_block_index = fat_index / (BLOCK_SIZE / sizeof(uint16_t));
+            fat_block_offset = fat_index % (BLOCK_SIZE / sizeof(uint16_t));
+            data_block_index++;
+            block_offset = 0;
+        }
+
+        // Update file descriptor's offset
+        fd_table[fd]->offset = file_offset;
+
+        return bytes_read;
+    }
 }
 
