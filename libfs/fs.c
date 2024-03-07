@@ -15,6 +15,7 @@
 #define FAT_ENTRIES 8192
 #define BLOCK_SIZE 4096 
 #define MAX_FILENAME 16 
+#define FAT_EOC 0xFFFF 
 
 
 //superblock 
@@ -31,7 +32,7 @@ typedef struct __attribute__((packed)) {
 //single block of FAT
 typedef struct __attribute__((packed)) {
 	uint16_t entries[BLOCK_SIZE/2];
-} FATEntry;
+} FAT;
 
 
 typedef struct __attribute__((packed)) {
@@ -49,11 +50,12 @@ typedef struct __attribute__((packed)) {
 
 
 static  SuperBlock *super_block;
-static  FATEntry *fat_entries;
+static  FAT *fat_entries;
 static  RootEntry *RootEntryArray;
 static struct FileDescriptor *fd_table[FS_OPEN_MAX_COUNT];
 
 
+// make fs on disk accessible on diskname (OS)
 int fs_mount(const char *diskname)
 {
 	// Open virtual disk
@@ -87,7 +89,7 @@ int fs_mount(const char *diskname)
 
 
 	// Read blocks into a FAT array
-	fat_entries = malloc(sizeof(FATEntry) * super_block->fat_block_amount);
+	fat_entries = malloc(sizeof(FAT) * super_block->fat_block_amount);
 	if (!fat_entries) {
         fprintf(stderr, "Error: unable to allocate memory for the FAT.\n");
         free(super_block);
@@ -120,7 +122,12 @@ int fs_mount(const char *diskname)
         return -1;
     }
 
-	//intialize fd table?
+    // Initialize the file descriptor table
+    for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
+        fd_table[i] = NULL; // Set each file descriptor to NULL, indicating it's not in use
+    }
+
+    //printf("made it past initial checks");
 
 
 	return 0;
@@ -183,7 +190,7 @@ int fs_info(void)
     // Count free blocks in the FAT
     int free_fat_blocks = 0;
     for (int i = 0; i < super_block->data_block_amount; i++) {
-        // Assuming each FATEntry struct represents a block of FAT entries
+        // Assuming each FAT struct represents a block of FAT entries
 		if (fat_entries->entries[i] == 0){
 			free_fat_blocks++;
 		}
@@ -243,7 +250,7 @@ int fs_create(const char *filename)
 	// Create the file by initializing RootEntry
     strcpy((char *)RootEntryArray[emptyEntry].file_name, filename);
     RootEntryArray[emptyEntry].file_size = 0;
-    RootEntryArray[emptyEntry].first_data_block_index = 0xFFFF; // Indicating no data blocks are allocated yet
+    RootEntryArray[emptyEntry].first_data_block_index = FAT_EOC; // Indicating no data blocks are allocated yet
 
     // Write updated RootEntryArray back to disk
     if (block_write(super_block->root_block_index, RootEntryArray) == -1) {
@@ -258,11 +265,83 @@ int fs_create(const char *filename)
 int fs_delete(const char *filename)
 {
 	/* TODO: Phase 2 */
+    if (!super_block || !fat_entries || !RootEntryArray) {
+        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
+        return -1;
+    }
+
+    if (!filename || strlen(filename) == 0 || strlen(filename) >= MAX_FILENAME) {
+        fprintf(stderr, "Error: Invalid filename.\n");
+        return -1;
+    }
+    // Check if file exists
+    int fileIndex = -1;
+    for (int i = 0; i < MAX_ROOT_ENTRIES; i++) {
+        if (strcmp((char *)RootEntryArray[i].file_name, filename) == 0) {
+            fileIndex = i;
+            break;
+        }
+    }
+    // if file not found 
+    if (fileIndex == -1) {
+        fprintf(stderr, "Error: File not found.\n");
+        return -1;
+    }
+
+    // Free allocated FAT entries
+    uint16_t currentBlock = RootEntryArray[fileIndex].first_data_block_index;
+    while (currentBlock != 0xFFFF) {
+        int fatBlockIndex = currentBlock / (BLOCK_SIZE / 2);
+        uint16_t nextBlockIndex = fat_entries[fatBlockIndex].entries[currentBlock % (BLOCK_SIZE / 2)];
+        fat_entries[fatBlockIndex].entries[currentBlock % (BLOCK_SIZE / 2)] = 0;  // Mark the block as free
+        
+        // Write the modified FAT block back to disk
+        // Assuming FAT starts immediately after the superblock, at block 1
+        int diskBlockNum = 1 + fatBlockIndex; // Add 1 to account for the superblock at block 0
+        if (block_write(diskBlockNum, &fat_entries[fatBlockIndex]) == -1) {
+            fprintf(stderr, "Error: Unable to write FAT block to disk.\n");
+            return -1;
+        }
+
+        currentBlock = nextBlockIndex;
+    }
+
+    memset(&RootEntryArray[fileIndex], 0, sizeof(RootEntry));
+
+    // Write the updated root directory back to disk
+    if (block_write(super_block->root_block_index, RootEntryArray) == -1) {
+        fprintf(stderr, "Error: Unable to write RootEntryArray to disk.\n");
+        return -1;
+    }
+
+    return 0;
+    
 }
 
 int fs_ls(void)
 {
 	/* TODO: Phase 2 */
+    if (!super_block || !fat_entries || !RootEntryArray) {
+        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
+        return -1;
+    }
+
+    printf("FS Ls:\n");
+
+    // Step 2: Iterate through the Root Directory
+    for (int i = 0; i < MAX_ROOT_ENTRIES; i++) {
+        // Check if the entry is valid (non-empty)
+        if (RootEntryArray[i].file_name[0] != '\0') {
+            // Step 3: Print File Information
+            // Assuming 'file_name' is a null-terminated string
+            printf("file: %s, size: %d, data_blk: %d\n",
+                   RootEntryArray[i].file_name,
+                   RootEntryArray[i].file_size,
+                   RootEntryArray[i].first_data_block_index);
+        }
+    }
+
+    return 0;  // Indicate success
 }
 
 int fs_open(const char *filename)

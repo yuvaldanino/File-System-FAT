@@ -161,6 +161,9 @@ info() {
     log "Score: ${score}"
 }
 
+
+
+
 # Info with files
 info_full() {
     log "\n--- Running ${FUNCNAME} ---"
