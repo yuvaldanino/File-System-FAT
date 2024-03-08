@@ -1,0 +1,5 @@
+MOUNT
+OPEN	simple_reader.c
+READ	4096	FILE	simple_reader.c
+CLOSE
+UMOUNT

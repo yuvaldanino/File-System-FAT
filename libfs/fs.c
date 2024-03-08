@@ -349,7 +349,7 @@ int fs_open(const char *filename)
 {
     int fd = -1;
 
-    printf("Starting to open.\n");
+    //printf("Starting to open.\n");
 
     // Check if the filesystem is mounted
     if (!is_mounted()) {
@@ -506,74 +506,44 @@ int get_block_index(int start_block, int logical_block_index) {
 
 
 int fs_read(int fd, void *buf, size_t count) {
-    // Step 1: Initial Checks
-    // Check if the filesystem is mounted
-    if (!is_mounted()) {
-        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
-        return -1;
+    if (!is_mounted() || fd < 0 || fd >= FS_OPEN_MAX_COUNT || buf == NULL || fd_table[fd] == NULL) {
+        return -1; // Check for mounted FS, valid FD, and non-null buffer
     }
 
-    // Validate the file descriptor
-    if (!is_valid_fd(fd)) {
-        fprintf(stderr, "Error: Invalid file descriptor.\n");
-        return -1;
+    FileDescriptor *fileDesc = fd_table[fd];
+    uint16_t currentBlock = RootEntryArray[fileDesc->index].first_data_block_index;
+    size_t fileOffset = fileDesc->offset;
+    size_t bytesToRead = min(count, RootEntryArray[fileDesc->index].file_size - fileOffset);
+    size_t bytesRead = 0;
+
+    char *bounceBuffer = malloc(BLOCK_SIZE); // Using a bounce buffer for each block read
+    if (!bounceBuffer) {
+        return -1; // Failed to allocate bounce buffer
     }
-    if (!buf) {
-        return -1; // NULL buffer
-    }
 
-    printf("fs_read: Starting read operation. FD: %d, Count: %zu\n", fd, count);
+    while (bytesToRead > 0 && currentBlock != FAT_EOC) {
+        int blockIndex = super_block->data_block_index + currentBlock; // Calculate actual block index
+        block_read(blockIndex, bounceBuffer);
 
-
-    // File metadata
-    size_t file_size = RootEntryArray[fd_table[fd]->index].file_size;
-    size_t file_offset = fd_table[fd]->offset;
-    size_t bytes_read = 0; // Counter for bytes read
-
-    // Step 2: Calculate Read Parameters
-    size_t bytes_left = min(count, file_size - file_offset); // Don't read beyond EOF
-    printf("fs_read: File size: %zu, File offset: %zu, Bytes left to read: %zu\n", file_size, file_offset, bytes_left);
-
-    // Step 3: Read Loop
-    while (bytes_left > 0) {
-        // Calculate the current block index in the FAT and offset within the block
-        uint16_t current_block_index = get_block_index(fd_table[fd]->index, file_offset / BLOCK_SIZE);
-        size_t block_offset = file_offset % BLOCK_SIZE;
+        size_t blockOffset = fileOffset % BLOCK_SIZE;
+        size_t bytesInBlock = min(BLOCK_SIZE - blockOffset, bytesToRead);
         
-        printf("fs_read: Reading block. Current block index: %u, Block offset: %zu, Bytes in block to read: %zu\n", current_block_index, block_offset, min(BLOCK_SIZE - block_offset, bytes_left));
+        memcpy(buf + bytesRead, bounceBuffer + blockOffset, bytesInBlock);
 
-        // Read the entire block into a temporary buffer (bounce buffer)
-        char block_data[BLOCK_SIZE];
-        if (block_read(current_block_index, block_data) == -1) {
-            fprintf(stderr, "Error: Failed to read block.\n");
-            break; // Failed to read block
+        bytesRead += bytesInBlock;
+        bytesToRead -= bytesInBlock;
+        fileOffset += bytesInBlock;
+
+        if (bytesInBlock < BLOCK_SIZE - blockOffset || currentBlock == FAT_EOC) {
+            break; // Either we've read the requested bytes or reached the end of file
         }
 
-        // Calculate how much data to copy from the current block
-        size_t bytes_in_block = min(BLOCK_SIZE - block_offset, bytes_left);
-        
-        // Copy data from the block to the user buffer
-        memcpy((char*)buf + bytes_read, block_data + block_offset, bytes_in_block);
-        printf("fs_read: Block read successfully. Bytes copied to buffer: %zu\n", bytes_in_block);
-
-        // Update counters and offsets
-        bytes_read += bytes_in_block;
-        file_offset += bytes_in_block;
-        bytes_left -= bytes_in_block;
-
-        printf("fs_read: Updated counters. File offset: %zu, Bytes left: %zu, Total bytes read: %zu\n", file_offset, bytes_left, bytes_read);
-
+        currentBlock = fat_entries[currentBlock].entries[0]; // Move to next block in the chain
     }
 
-    // Step 4: Update File Offset
-    fd_table[fd]->offset += bytes_read;
+    fileDesc->offset += bytesRead; // Update the file descriptor's offset
 
-    //printf("Read %zu bytes from file. Compared %zu correct.\n", bytes_read, bytes_read);
+    free(bounceBuffer); // Free the allocated bounce buffer
 
-    printf("fs_read: Completed read operation. Total bytes read: %zu\n", bytes_read);
-
-
-    return bytes_read; // Return the number of bytes actually read
+    return bytesRead; // Return the number of bytes read
 }
-
-
