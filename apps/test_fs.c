@@ -198,6 +198,7 @@ void thread_fs_script(void *arg)
 			data_description = command_args[3];
 
 			char file_loaded = 0;
+			printf("reading in READ \n");
 
 			if (strcmp(data_source, "DATA") == 0) {
 				data = data_description;

@@ -17,6 +17,9 @@
 #define MAX_FILENAME 16 
 #define FAT_EOC 0xFFFF 
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
+
+
 
 //superblock 
 typedef struct __attribute__((packed)) {
@@ -164,7 +167,7 @@ int fs_umount(void)
 		return -1; // Closing the virtual disk failed
     }
 
-
+    //printf("UNMOUNTED!\n");
 	//reset fd table?
 	return 0;
 }
@@ -344,9 +347,13 @@ int fs_ls(void)
 
 int fs_open(const char *filename)
 {
-    int fd;
+    int fd = -1;
+
+    printf("Starting to open.\n");
+
     // Check if the filesystem is mounted
     if (!is_mounted()) {
+        fprintf(stderr, "Error: Filesystem not mounted.\n");
         return -1;  // Filesystem not mounted
     }
 
@@ -374,19 +381,25 @@ int fs_open(const char *filename)
         if (fd_table[i] == NULL) {  // Found an available spot
             fd_table[i] = malloc(sizeof(FileDescriptor));
             if (fd_table[i] == NULL) {
+                fprintf(stderr, "Failed to allocate memory for FD.\n");
                 return -1;  // Failed to allocate memory for FD
             }
             fd_table[i]->offset = 0;  // Initialize file offset to 0
             fd_table[i]->index = fileIndex;  // Store the index of the file in the root directory
             fd_table[i]->in_use = 1;  // Mark FD as in use
             fd = i;  // FD is the index in the fd_table
+            //printf("FD is %d \n", fd);
+
             break;
         }
     }
 
     if (fd == -1) {
+        fprintf(stderr, "Error: No available file descriptor spot.\n");
         return -1;  // No available file descriptor spot
     }
+    
+    //printf("This OPEN successful.\n");
 
     return fd;  // Return the file descriptor
 }
@@ -395,11 +408,13 @@ int fs_close(int fd)
 {
     // Check if the file descriptor is within the valid range
     if (fd < 0 || fd >= FS_OPEN_MAX_COUNT) {
+        fprintf(stderr, "FD %d is not in valid range [0, %d).\n", fd, FS_OPEN_MAX_COUNT);
         return -1; // Invalid file descriptor
     }
 
     // Check if the file descriptor is actually in use
     if (fd_table[fd] == NULL || fd_table[fd]->in_use == 0) {
+        fprintf(stderr, "File not in use\n");
         return -1; // File descriptor not in use or invalid
     }
 
@@ -468,75 +483,97 @@ int fs_write(int fd, void *buf, size_t count)
 	/* TODO: Phase 4 */
 }
 
-int fs_read(int fd, void *buf, size_t count)
-{
-    if (!is_mounted()) {
-        return -1;
-    }
-    if (!is_valid_fd(fd)) {
-        return -1;
-    }
-    int bytes_read = 0;
-    int remaining_bytes = count;
-    char *buffer = (char *)buf;
+// Helper function to find the actual block number on disk for a given logical block index in a file
+int get_block_index(int start_block, int logical_block_index) {
+    uint16_t current_block = (uint16_t)start_block;
 
-    // Calculate file's current offset and size
-    int file_offset = fd_table[fd]->offset;
-    int file_size = RootEntryArray[fd_table[fd]->index].file_size;
+    for (int i = 0; i < logical_block_index; i++) {
+        // Calculate the index of the FAT structure and the offset within it
+        int fat_struct_index = current_block / (BLOCK_SIZE / 2);
+        int entry_offset = current_block % (BLOCK_SIZE / 2);
 
-    // Calculate index of data block at the file offset
-    int data_block_index = file_offset / BLOCK_SIZE;
-    int block_offset = file_offset % BLOCK_SIZE;
-
-    // Read data blocks until we've reached the appropriate count or reach the end of the file
-    while (bytes_read < count && file_offset < file_size) {
-        char data_block[BLOCK_SIZE];
-        int fat_index = fd_table[fd]->index;
-        int fat_block_index = fat_index / (BLOCK_SIZE / sizeof(uint16_t));
-        int fat_block_offset = fat_index % (BLOCK_SIZE / sizeof(uint16_t));
-
-        if (fat_block_index >= super_block->fat_block_amount) {
+        // Check for FAT end-of-chain or invalid access
+        if (fat_struct_index >= super_block->fat_block_amount || current_block == FAT_EOC) {
             return -1;
         }
 
-        // Read data block from disk
-        printf("Made it to block_read. fat_block_index: %d, fat_block_offset: %d, data_block: %s\n", fat_block_index, fat_block_offset, data_block);
-        if (block_read(fat_entries[fat_block_index].entries[fat_block_offset], data_block) == -1) {
-            return -1;
-        }
-
-        // Calculate how many bytes to read from the block
-        int bytes_to_copy = remaining_bytes;
-        if (bytes_to_copy > BLOCK_SIZE - block_offset) {
-            bytes_to_copy = BLOCK_SIZE - block_offset;
-        }
-        
-        // Copy data from block to buffer
-        memcpy(buffer + bytes_read, data_block + block_offset, bytes_to_copy);
-
-        // Update counters
-        bytes_read += bytes_to_copy;
-        remaining_bytes += bytes_to_copy;
-        file_offset += bytes_to_copy;
-        buffer += bytes_to_copy;
-
-        // Move to next data block if we still have bytes to read
-        if (remaining_bytes > 0) {
-            int next_data_block_index = fat_entries[fat_block_index].entries[fat_block_offset];
-            if (next_data_block_index == FAT_EOC) {
-                break;
-            }
-            fat_index = next_data_block_index;
-            fat_block_index = fat_index / (BLOCK_SIZE / sizeof(uint16_t));
-            fat_block_offset = fat_index % (BLOCK_SIZE / sizeof(uint16_t));
-            data_block_index++;
-            block_offset = 0;
-        }
-
-        // Update file descriptor's offset
-        fd_table[fd]->offset = file_offset;
-
-        return bytes_read;
+        // Access the next block in the chain from the FAT
+        current_block = fat_entries[fat_struct_index].entries[entry_offset];
     }
+
+    return current_block;
 }
+
+
+int fs_read(int fd, void *buf, size_t count) {
+    // Step 1: Initial Checks
+    // Check if the filesystem is mounted
+    if (!is_mounted()) {
+        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
+        return -1;
+    }
+
+    // Validate the file descriptor
+    if (!is_valid_fd(fd)) {
+        fprintf(stderr, "Error: Invalid file descriptor.\n");
+        return -1;
+    }
+    if (!buf) {
+        return -1; // NULL buffer
+    }
+
+    printf("fs_read: Starting read operation. FD: %d, Count: %zu\n", fd, count);
+
+
+    // File metadata
+    size_t file_size = RootEntryArray[fd_table[fd]->index].file_size;
+    size_t file_offset = fd_table[fd]->offset;
+    size_t bytes_read = 0; // Counter for bytes read
+
+    // Step 2: Calculate Read Parameters
+    size_t bytes_left = min(count, file_size - file_offset); // Don't read beyond EOF
+    printf("fs_read: File size: %zu, File offset: %zu, Bytes left to read: %zu\n", file_size, file_offset, bytes_left);
+
+    // Step 3: Read Loop
+    while (bytes_left > 0) {
+        // Calculate the current block index in the FAT and offset within the block
+        uint16_t current_block_index = get_block_index(fd_table[fd]->index, file_offset / BLOCK_SIZE);
+        size_t block_offset = file_offset % BLOCK_SIZE;
+        
+        printf("fs_read: Reading block. Current block index: %u, Block offset: %zu, Bytes in block to read: %zu\n", current_block_index, block_offset, min(BLOCK_SIZE - block_offset, bytes_left));
+
+        // Read the entire block into a temporary buffer (bounce buffer)
+        char block_data[BLOCK_SIZE];
+        if (block_read(current_block_index, block_data) == -1) {
+            fprintf(stderr, "Error: Failed to read block.\n");
+            break; // Failed to read block
+        }
+
+        // Calculate how much data to copy from the current block
+        size_t bytes_in_block = min(BLOCK_SIZE - block_offset, bytes_left);
+        
+        // Copy data from the block to the user buffer
+        memcpy((char*)buf + bytes_read, block_data + block_offset, bytes_in_block);
+        printf("fs_read: Block read successfully. Bytes copied to buffer: %zu\n", bytes_in_block);
+
+        // Update counters and offsets
+        bytes_read += bytes_in_block;
+        file_offset += bytes_in_block;
+        bytes_left -= bytes_in_block;
+
+        printf("fs_read: Updated counters. File offset: %zu, Bytes left: %zu, Total bytes read: %zu\n", file_offset, bytes_left, bytes_read);
+
+    }
+
+    // Step 4: Update File Offset
+    fd_table[fd]->offset += bytes_read;
+
+    //printf("Read %zu bytes from file. Compared %zu correct.\n", bytes_read, bytes_read);
+
+    printf("fs_read: Completed read operation. Total bytes read: %zu\n", bytes_read);
+
+
+    return bytes_read; // Return the number of bytes actually read
+}
+
 
