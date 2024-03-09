@@ -19,8 +19,6 @@
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
-
-
 //superblock 
 typedef struct __attribute__((packed)) {
 	uint8_t signature[SIGNATURE_LENGTH]; 
@@ -37,7 +35,6 @@ typedef struct __attribute__((packed)) {
 	uint16_t entries[BLOCK_SIZE/2];
 } FAT;
 
-
 typedef struct __attribute__((packed)) {
 	uint8_t file_name[MAX_FILENAME];
 	uint32_t file_size;
@@ -51,14 +48,28 @@ typedef struct __attribute__((packed)) {
 	int in_use; 
 } FileDescriptor;
 
-
 static  SuperBlock *super_block;
 static  FAT *fat_entries;
 static  RootEntry *RootEntryArray;
 static  FileDescriptor *fd_table[FS_OPEN_MAX_COUNT];
 
+int free_memory(void) {
+    if (super_block) {
+        free(super_block);
+        super_block = NULL;
+    }
 
-// make fs on disk accessible on diskname (OS)
+    if (fat_entries) {
+        free(fat_entries);
+        fat_entries = NULL;
+    }
+
+    if (RootEntryArray) {
+        free(RootEntryArray);
+        RootEntryArray = NULL;
+    }
+}
+
 int fs_mount(const char *diskname)
 {
 	// Open virtual disk
@@ -69,14 +80,14 @@ int fs_mount(const char *diskname)
 	super_block = malloc(sizeof(SuperBlock));
 	if (!super_block || block_read(0, super_block) == -1) {
         fprintf(stderr, "Error: unable to read the superblock from disk.\n");
-        free(super_block);
+        free_memory();
         block_disk_close();
         return -1;
     }
 	// Verify signature has correct signature
 	if (memcmp(super_block->signature, SIGNATURE, SIGNATURE_LENGTH) != 0) {
 		fprintf(stderr, "Error: disk signature doesn't match.\n");
-        free(super_block);
+        free_memory();
         block_disk_close();
         return -1;
 	}
@@ -84,7 +95,7 @@ int fs_mount(const char *diskname)
 	// Verify super_block has correct block amount
 	if (super_block->total_block_amount != block_disk_count()) {
 		fprintf(stderr, "Error: super_block has wrong block amount.\n");
-		free(super_block);
+        free_memory();
     	block_disk_close();
 		return -1;
 	}
@@ -93,7 +104,7 @@ int fs_mount(const char *diskname)
 	fat_entries = malloc(sizeof(FAT) * super_block->fat_block_amount);
 	if (!fat_entries) {
         fprintf(stderr, "Error: unable to allocate memory for the FAT.\n");
-        free(super_block);
+        free_memory();
         block_disk_close();
         return -1;
     }
@@ -101,8 +112,7 @@ int fs_mount(const char *diskname)
 	// Read the FAT blocks from disk
 	for (int i = 0; i < super_block->fat_block_amount; i++) {
 		if (block_read(1 + i, &fat_entries[i]) == -1) {
-			free(fat_entries);
-			free(super_block);
+            free_memory();
 			return -1; // Handle read failure
 		}
 	}
@@ -110,16 +120,13 @@ int fs_mount(const char *diskname)
 	// Allocate memory for the root directory entries
     RootEntryArray = malloc(MAX_ROOT_ENTRIES * sizeof(RootEntry));
     if (RootEntryArray == NULL) {
-        free(fat_entries);
-        free(super_block);
+        free_memory();
         return -1; // Handle memory allocation failure
     }	
 
 	// Read the root directory block from disk
     if (block_read(super_block->root_block_index, RootEntryArray) == -1) {
-        free(RootEntryArray);
-        free(fat_entries);
-        free(super_block);
+        free_memory();
         return -1;
     }
 
@@ -127,9 +134,6 @@ int fs_mount(const char *diskname)
     for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
         fd_table[i] = NULL; // Set each file descriptor to NULL, indicating it's not in use
     }
-
-    //printf("made it past initial checks");
-
 
 	return 0;
 }
@@ -145,30 +149,15 @@ int fs_umount(void)
         return -1;
     }
 
-	// Free the dynamically allocated memory
-    if (super_block) {
-        free(super_block);
-        super_block = NULL;
-    }
+	// Free dynamically allocated memory
+    free_memory();
 
-    if (fat_entries) {
-        free(fat_entries);
-        fat_entries = NULL;
-    }
-
-    if (RootEntryArray) {
-        free(RootEntryArray);
-        RootEntryArray = NULL;
-    }
-
-    // Close the virtual disk
+    // Close virtual disk
     if (block_disk_close() == -1) {
         fprintf(stderr, "Error: Unable to close virtual disk.\n");
 		return -1; // Closing the virtual disk failed
     }
 
-    //printf("UNMOUNTED!\n");
-	//reset fd table?
 	return 0;
 }
 
@@ -179,7 +168,6 @@ int fs_info(void)
         return -1;
     }
 
-    // Print basic filesystem information
     printf("FS Info:\n");
     printf("total_blk_count=%d\n", super_block->total_block_amount);
     printf("fat_blk_count=%d\n", super_block->fat_block_amount);
@@ -190,7 +178,6 @@ int fs_info(void)
     // Count free blocks in the FAT
     int free_fat_blocks = 0;
     for (int i = 0; i < super_block->data_block_amount; i++) {
-        // Assuming each FAT struct represents a block of FAT entries
 		if (fat_entries->entries[i] == 0){
 			free_fat_blocks++;
 		}
@@ -244,7 +231,6 @@ int fs_create(const char *filename)
         }
     }
 
-	// Check if root directory is full
     if (emptyEntry == -1) {
         fprintf(stderr, "Error: Root directory is full.\n");
         return -1;
@@ -262,7 +248,6 @@ int fs_create(const char *filename)
     }
 
     return 0;
-
 }
 
 int fs_delete(const char *filename)
@@ -284,7 +269,6 @@ int fs_delete(const char *filename)
             break;
         }
     }
-    // if file not found 
     if (fileIndex == -1) {
         fprintf(stderr, "Error: File not found.\n");
         return -1;
@@ -317,7 +301,6 @@ int fs_delete(const char *filename)
     }
 
     return 0;
-    
 }
 
 int fs_ls(void)
@@ -329,12 +312,10 @@ int fs_ls(void)
 
     printf("FS Ls:\n");
 
-    // Step 2: Iterate through the Root Directory
+    // Iterate through the Root Directory
     for (int i = 0; i < MAX_ROOT_ENTRIES; i++) {
         // Check if the entry is valid (non-empty)
         if (RootEntryArray[i].file_name[0] != '\0') {
-            // Step 3: Print File Information
-            // Assuming 'file_name' is a null-terminated string
             printf("file: %s, size: %d, data_blk: %d\n",
                    RootEntryArray[i].file_name,
                    RootEntryArray[i].file_size,
@@ -342,16 +323,12 @@ int fs_ls(void)
         }
     }
 
-    return 0;  // Indicate success
+    return 0;
 }
 
 int fs_open(const char *filename)
 {
     int fd = -1;
-
-    //printf("Starting to open.\n");
-
-    // Check if the filesystem is mounted
     if (!is_mounted()) {
         fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;  // Filesystem not mounted
@@ -369,14 +346,14 @@ int fs_open(const char *filename)
             break;
         }
     }
-    // if file not found 
+    // Check if file is found 
     if (fileIndex == -1) {
         fprintf(stderr, "Error: File not found.\n");
         return -1;
     }
 
-    //look for spot in fd table 
-    // avilable spot = NULL in mount we initialize all the fd to NULL so we have empty table 
+    // Look for spot in file descriptor table.
+    // Available spots set to NULL when mounting to establish an empty table.
     for (int i = 0; i < FS_OPEN_MAX_COUNT; i++) {
         if (fd_table[i] == NULL) {  // Found an available spot
             fd_table[i] = malloc(sizeof(FileDescriptor));
@@ -388,8 +365,6 @@ int fs_open(const char *filename)
             fd_table[i]->index = fileIndex;  // Store the index of the file in the root directory
             fd_table[i]->in_use = 1;  // Mark FD as in use
             fd = i;  // FD is the index in the fd_table
-            //printf("FD is %d \n", fd);
-
             break;
         }
     }
@@ -399,8 +374,6 @@ int fs_open(const char *filename)
         return -1;  // No available file descriptor spot
     }
     
-    //printf("This OPEN successful.\n");
-
     return fd;  // Return the file descriptor
 }
 
@@ -428,18 +401,15 @@ int fs_close(int fd)
 
 int is_valid_fd(int fd) {
     return (fd >= 0 && fd < FS_OPEN_MAX_COUNT && fd_table[fd] != NULL && fd_table[fd]->in_use != 0);
-
 }
 
 int fs_stat(int fd)
 {
-    // Check if the filesystem is mounted
     if (!is_mounted()) {
         fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;
     }
 
-    // Validate the file descriptor
     if (!is_valid_fd(fd)) {
         fprintf(stderr, "Error: Invalid file descriptor.\n");
         return -1;
@@ -451,13 +421,11 @@ int fs_stat(int fd)
 
 int fs_lseek(int fd, size_t offset)
 {
-    // Check if the filesystem is mounted
     if (!is_mounted()) {
         fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;
     }
 
-    // Validate the file descriptor
     if (!is_valid_fd(fd)) {
         fprintf(stderr, "Error: Invalid file descriptor.\n");
         return -1;
@@ -472,10 +440,9 @@ int fs_lseek(int fd, size_t offset)
         return -1;
     }
 
-    // Set the file offset
     fd_table[fd]->offset = offset;
 
-    return 0; // Success
+    return 0; 
 }
 
 
@@ -552,14 +519,13 @@ uint16_t allocate_block() {
 
 
 int fs_write(int fd, void *buf, size_t count) {
-    // Initial checks
     if (!super_block || !fat_entries || !RootEntryArray || fd < 0 || fd >= FS_OPEN_MAX_COUNT || fd_table[fd] == NULL || buf == NULL) {
         fprintf(stderr, "Error: failed write intial state.\n");
 
         return -1;
     }
 
-    size_t bytesWritten = 0; // Bytes successfully written
+    size_t bytesWritten = 0; 
     uint16_t currentBlock = RootEntryArray[fd_table[fd]->index].first_data_block_index;
     uint16_t previousBlock = FAT_EOC;
     size_t fileOffset = fd_table[fd]->offset;
@@ -568,7 +534,7 @@ int fs_write(int fd, void *buf, size_t count) {
     while (remaining > 0) {
         if (currentBlock == FAT_EOC) {
             // Allocate a new block and update FAT as necessary
-            currentBlock = allocate_block(); // Implement this function
+            currentBlock = allocate_block(); 
             if (currentBlock == FAT_EOC) {
                 break; // No more space available
             }
