@@ -218,7 +218,7 @@ int is_valid_filename(const char* filename) {
 int fs_create(const char *filename)
 {
 	if (!is_mounted()) {
-        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
+        fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;
     }
 
@@ -268,12 +268,12 @@ int fs_create(const char *filename)
 int fs_delete(const char *filename)
 {
     if (!is_mounted) {
-        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
+        fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;
     }
 
     if (!is_valid_filename(filename)) {
-        fprintf(stderr, "Error: Invalid filename.\n");
+        fprintf(stderr, "Error: Filename is invalid or too long.\n");
         return -1;
     }
     // Check if file exists
@@ -323,7 +323,7 @@ int fs_delete(const char *filename)
 int fs_ls(void)
 {
     if (!is_mounted()) {
-        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
+        fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;
     } 
 
@@ -353,12 +353,12 @@ int fs_open(const char *filename)
 
     // Check if the filesystem is mounted
     if (!is_mounted()) {
-        fprintf(stderr, "Error: Filesystem not mounted.\n");
+        fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;  // Filesystem not mounted
     }
 
     if (!is_valid_filename(filename)) {
-        fprintf(stderr, "Error: Invalid filename.\n");
+        fprintf(stderr, "Error: Filename is invalid or too long.\n");
         return -1;
     }
     // Check if file exists
@@ -435,7 +435,7 @@ int fs_stat(int fd)
 {
     // Check if the filesystem is mounted
     if (!is_mounted()) {
-        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
+        fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;
     }
 
@@ -453,7 +453,7 @@ int fs_lseek(int fd, size_t offset)
 {
     // Check if the filesystem is mounted
     if (!is_mounted()) {
-        fprintf(stderr, "Error: No filesystem is currently mounted.\n");
+        fprintf(stderr, "Error: Filesystem is not mounted.\n");
         return -1;
     }
 
@@ -478,35 +478,12 @@ int fs_lseek(int fd, size_t offset)
     return 0; // Success
 }
 
-int fs_write(int fd, void *buf, size_t count)
-{
-	/* TODO: Phase 4 */
-}
 
-// Helper function to find the actual block number on disk for a given logical block index in a file
-int get_block_index(int start_block, int logical_block_index) {
-    uint16_t current_block = (uint16_t)start_block;
-
-    for (int i = 0; i < logical_block_index; i++) {
-        // Calculate the index of the FAT structure and the offset within it
-        int fat_struct_index = current_block / (BLOCK_SIZE / 2);
-        int entry_offset = current_block % (BLOCK_SIZE / 2);
-
-        // Check for FAT end-of-chain or invalid access
-        if (fat_struct_index >= super_block->fat_block_amount || current_block == FAT_EOC) {
-            return -1;
-        }
-
-        // Access the next block in the chain from the FAT
-        current_block = fat_entries[fat_struct_index].entries[entry_offset];
-    }
-
-    return current_block;
-}
 
 
 int fs_read(int fd, void *buf, size_t count) {
     if (!is_mounted() || fd < 0 || fd >= FS_OPEN_MAX_COUNT || buf == NULL || fd_table[fd] == NULL) {
+        fprintf(stderr, "Error: failed intial check read.\n");
         return -1; // Check for mounted FS, valid FD, and non-null buffer
     }
 
@@ -518,6 +495,7 @@ int fs_read(int fd, void *buf, size_t count) {
 
     char *bounceBuffer = malloc(BLOCK_SIZE); // Using a bounce buffer for each block read
     if (!bounceBuffer) {
+        fprintf(stderr, "Error: Failed to allocate bounce buffer.\n");
         return -1; // Failed to allocate bounce buffer
     }
 
@@ -546,4 +524,94 @@ int fs_read(int fd, void *buf, size_t count) {
     free(bounceBuffer); // Free the allocated bounce buffer
 
     return bytesRead; // Return the number of bytes read
+}
+
+uint16_t allocate_block() {
+    // Iterate through the FAT to find a free block
+    for (uint16_t i = 1; i < super_block->data_block_amount; ++i) {  // Start from 1 since 0 is reserved
+        uint16_t fatBlock = i / (BLOCK_SIZE / sizeof(uint16_t)); // Which FAT block the entry is in
+        uint16_t entryIndex = i % (BLOCK_SIZE / sizeof(uint16_t)); // Entry index within the FAT block
+
+        if (fat_entries[fatBlock].entries[entryIndex] == 0) {  // If the entry is free
+            fat_entries[fatBlock].entries[entryIndex] = FAT_EOC;  // Mark it as the end of a chain
+
+            // Write the updated FAT block back to disk
+            if (block_write(super_block->data_block_index + fatBlock, &fat_entries[fatBlock]) == -1) {
+                fprintf(stderr, "Failed to write FAT block to disk\n");
+                return FAT_EOC;  // Return an error if writing the FAT block fails
+            }
+
+            // Return the actual block number, considering the data block start index
+            return super_block->data_block_index + i;
+        }
+    }
+    // If no free block is found, return FAT_EOC to indicate failure
+    return FAT_EOC;
+}
+
+
+
+int fs_write(int fd, void *buf, size_t count) {
+    // Initial checks
+    if (!super_block || !fat_entries || !RootEntryArray || fd < 0 || fd >= FS_OPEN_MAX_COUNT || fd_table[fd] == NULL || buf == NULL) {
+        fprintf(stderr, "Error: failed write intial state.\n");
+
+        return -1;
+    }
+
+    size_t bytesWritten = 0; // Bytes successfully written
+    uint16_t currentBlock = RootEntryArray[fd_table[fd]->index].first_data_block_index;
+    uint16_t previousBlock = FAT_EOC;
+    size_t fileOffset = fd_table[fd]->offset;
+    size_t remaining = count;
+
+    while (remaining > 0) {
+        if (currentBlock == FAT_EOC) {
+            // Allocate a new block and update FAT as necessary
+            currentBlock = allocate_block(); // Implement this function
+            if (currentBlock == FAT_EOC) {
+                break; // No more space available
+            }
+            if (previousBlock != FAT_EOC) {
+                fat_entries[previousBlock].entries[0] = currentBlock;
+            } else {
+                RootEntryArray[fd_table[fd]->index].first_data_block_index = currentBlock;
+            }
+        }
+
+        char blockBuffer[BLOCK_SIZE];
+        if (block_read(super_block->data_block_index + currentBlock, blockBuffer) == -1) {
+            fprintf(stderr, "Error reading block\n");
+            break; // Error reading block
+        }
+
+        size_t offsetInBlock = fileOffset % BLOCK_SIZE;
+        size_t spaceInBlock = BLOCK_SIZE - offsetInBlock;
+        size_t bytesInThisStep = min(spaceInBlock, remaining);
+
+        // Copy data to the block buffer and write it back
+        memcpy(blockBuffer + offsetInBlock, buf + bytesWritten, bytesInThisStep);
+        if (block_write(super_block->data_block_index + currentBlock, blockBuffer) == -1) {
+            fprintf(stderr, "Error writing block\n");
+
+            break; // Error writing block
+        }
+
+        bytesWritten += bytesInThisStep;
+        remaining -= bytesInThisStep;
+        fileOffset += bytesInThisStep;
+
+        if (bytesInThisStep == spaceInBlock) {
+            previousBlock = currentBlock;
+            currentBlock = fat_entries[currentBlock].entries[0]; // Move to the next block
+        }
+    }
+
+    // Update file descriptor and file size
+    fd_table[fd]->offset += bytesWritten;
+    if (fd_table[fd]->offset > RootEntryArray[fd_table[fd]->index].file_size) {
+        RootEntryArray[fd_table[fd]->index].file_size = fd_table[fd]->offset;
+    }
+
+    return bytesWritten; // Return the number of bytes actually written
 }
