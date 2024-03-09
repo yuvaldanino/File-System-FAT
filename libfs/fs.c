@@ -276,10 +276,10 @@ int fs_delete(const char *filename)
 
     // Free allocated FAT entries
     uint16_t currentBlock = RootEntryArray[fileIndex].first_data_block_index;
-    while (currentBlock != 0xFFFF) {
-        int fatBlockIndex = currentBlock / (BLOCK_SIZE / 2);
-        uint16_t nextBlockIndex = fat_entries[fatBlockIndex].entries[currentBlock % (BLOCK_SIZE / 2)];
-        fat_entries[fatBlockIndex].entries[currentBlock % (BLOCK_SIZE / 2)] = 0;  // Mark the block as free
+    while (currentBlock != FAT_EOC) {
+        int fatBlockIndex = currentBlock / (BLOCK_SIZE / sizeof(uint16_t));
+        uint16_t nextBlockIndex = fat_entries[fatBlockIndex].entries[currentBlock % (BLOCK_SIZE / sizeof(uint16_t))];
+        fat_entries[fatBlockIndex].entries[currentBlock % (BLOCK_SIZE / sizeof(uint16_t))] = 0;  // Mark the block as free
         
         // Write the modified FAT block back to disk
         // Assuming FAT starts immediately after the superblock, at block 1
